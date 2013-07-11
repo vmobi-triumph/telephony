@@ -128,7 +128,7 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
     /** Contains the name of the registered network in CDMA (either ONS or ERI text). */
     private String curPlmn = null;
 
-    private String mMdn;
+    private String mMdn = null;
     private int mHomeSystemId[] = null;
     private int mHomeNetworkId[] = null;
     private String mMin;
@@ -145,6 +145,8 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
 
     private ContentResolver cr;
     private String currentCarrier = null;
+
+    private boolean mIsSamsungCdma = SystemProperties.getBoolean("ro.ril.samsung_cdma", false);
 
     private ContentObserver mAutoTimeObserver = new ContentObserver(new Handler()) {
         @Override
@@ -294,6 +296,7 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
 
         switch (msg.what) {
         case EVENT_RADIO_AVAILABLE:
+		log("Receive EVENT_RADIO_AVAILABLE");
             break;
 
         case EVENT_RUIM_READY:
@@ -333,7 +336,16 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
             pollState();
             break;
 
+/*
+ * KD 8/28 - Handle CDMA Subscription Source Notification
+ */
+        case EVENT_CDMA_SUBSCRIPTION_SOURCE_CHANGED:
+            Log.w(LOG_TAG, "CDMA Subscription Source Upcall request");
+            cm.getCDMASubscription( obtainMessage(EVENT_POLL_STATE_CDMA_SUBSCRIPTION));	
+            break;
+
         case EVENT_NETWORK_STATE_CHANGED_CDMA:
+            Log.w(LOG_TAG, "CDMA NETwork State Change Upcall request");
             pollState();
             break;
 
@@ -364,14 +376,25 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
 
                 if (states.length > 9) {
                     try {
+                        // Samsung CDMA devices provide following states
+                        // in hex format as opposed to dec
                         if (states[4] != null) {
-                            baseStationId = Integer.parseInt(states[4]);
+                            if (mIsSamsungCdma)
+                                baseStationId = Integer.parseInt(states[4], 16);
+                            else
+                                baseStationId = Integer.parseInt(states[4]);
                         }
                         if (states[5] != null) {
-                            baseStationLatitude = Integer.parseInt(states[5]);
+                            if (mIsSamsungCdma)
+                                baseStationLatitude = Integer.parseInt(states[5], 16);
+                            else
+                                baseStationLatitude = Integer.parseInt(states[5]);
                         }
                         if (states[6] != null) {
-                            baseStationLongitude = Integer.parseInt(states[6]);
+                            if (mIsSamsungCdma)
+                                baseStationLongitude = Integer.parseInt(states[6], 16);
+                            else
+                                baseStationLongitude = Integer.parseInt(states[6]);
                         }
                         // Some carriers only return lat-lngs of 0,0
                         if (baseStationLatitude == 0 && baseStationLongitude == 0) {
@@ -401,6 +424,7 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
 
         case EVENT_POLL_STATE_REGISTRATION_CDMA:
         case EVENT_POLL_STATE_OPERATOR_CDMA:
+            Log.w(LOG_TAG, "CDMA Registration or Operator Upcall request");
             ar = (AsyncResult) msg.obj;
             handlePollStateResult(msg.what, ar);
             break;
@@ -410,7 +434,27 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
 
             if (ar.exception == null) {
                 String cdmaSubscription[] = (String[])ar.result;
-                if (cdmaSubscription != null && cdmaSubscription.length >= 5) {
+/*
+ * KD 8/28 - Add check for Triumph here, and if we find it, set up to run as
+ * the Samsung devices do on this request, since it appears they return
+ * 4 elements instead of five.  We then grab the PRL out of system properties.
+ * Yeah, it's bullshit, but there's debate over what RIL code 106 is, and
+ * I'm uncomfortable coding for it given the divergent definitions.  Isn't
+ * it fun when allegedly-standard APIs are different between implementations?
+ */
+                // Samsung CDMA devices have shorter cdmaSubscription parcel
+                String sRILClassname = SystemProperties.get("ro.telephony.ril_class");
+		int SUB_LENGTH = 5;
+            	if ("Triumph".equals(sRILClassname)) {
+			SUB_LENGTH = 4;
+		} else {
+	                SUB_LENGTH = (mIsSamsungCdma) ? 4 : 5;	
+		}
+		Log.e(LOG_TAG, "cdmaSubscription0: " + cdmaSubscription[0]);
+		Log.e(LOG_TAG, "cdmaSubscription1: " + cdmaSubscription[1]);
+		Log.e(LOG_TAG, "cdmaSubscription2: " + cdmaSubscription[2]);
+		Log.e(LOG_TAG, "cdmaSubscription3: " + cdmaSubscription[3]);
+                if (cdmaSubscription != null && cdmaSubscription.length >= SUB_LENGTH) {
                     mMdn = cdmaSubscription[0];
                     if (cdmaSubscription[1] != null) {
                         String[] sid = cdmaSubscription[1].split(",");
@@ -438,7 +482,23 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
                     }
                     Log.d(LOG_TAG,"GET_CDMA_SUBSCRIPTION NID=" + cdmaSubscription[2] );
                     mMin = cdmaSubscription[3];
-                    mPrlVersion = cdmaSubscription[4];
+                    Log.d(LOG_TAG,"GET_CDMA_SUBSCRIPTION MIN=" + cdmaSubscription[3] );
+                    // Samsung CDMA devices' prl is not found in this parcel
+                    // instead, extract it from system properties
+/*
+ * KD - again, check the triumph code and act as if Samsung
+ */
+            	    if ("Triumph".equals(sRILClassname)) {
+			mPrlVersion = SystemProperties.get("ro.telephony.ril_prl");
+	            } else {
+			if (mIsSamsungCdma) {
+				String[] prl = (SystemProperties.get("ril.prl_ver_1").split(":"));
+				mPrlVersion = prl[1];
+       	             	} else {
+	       	                mPrlVersion = cdmaSubscription[4];
+                    	}
+		    }
+                    Log.d(LOG_TAG,"GET_CDMA_SUBSCRIPTION PRL=" + mPrlVersion);
                     Log.d(LOG_TAG,"GET_CDMA_SUBSCRIPTION MDN=" + mMdn);
                     //Notify apps subscription info is ready
                     if (cdmaForSubscriptionInfoReadyRegistrants != null) {
@@ -687,14 +747,25 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
                         if (states[3] != null) {
                             radioTechnology = Integer.parseInt(states[3]);
                         }
+                        // Samsung CDMA devices provide following states
+                        // in hex format as opposed to dec
                         if (states[4] != null) {
-                            baseStationId = Integer.parseInt(states[4]);
+                            if (mIsSamsungCdma)
+                                baseStationId = Integer.parseInt(states[4], 16);
+                            else
+                                baseStationId = Integer.parseInt(states[4]);
                         }
                         if (states[5] != null) {
-                            baseStationLatitude = Integer.parseInt(states[5]);
+                            if (mIsSamsungCdma)
+                                baseStationLatitude = Integer.parseInt(states[5], 16);
+                            else
+                                baseStationLatitude = Integer.parseInt(states[5]);
                         }
                         if (states[6] != null) {
-                            baseStationLongitude = Integer.parseInt(states[6]);
+                            if (mIsSamsungCdma)
+                                baseStationLongitude = Integer.parseInt(states[6], 16);
+                            else
+                                baseStationLongitude = Integer.parseInt(states[6]);
                         }
                         // Some carriers only return lat-lngs of 0,0
                         if (baseStationLatitude == 0 && baseStationLongitude == 0) {
@@ -897,7 +968,18 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
             break;
 
         case SIM_NOT_READY:
+	     log("Received SIM_NOT_READY");
+
         case SIM_LOCKED_OR_ABSENT:
+/*
+ * KD 8/28 - do not kill the rado if we get a SIM ABSENT on a Triumph - just
+ * ignore the state.  Triumphs don't have SIMs.
+ */
+            log("SIM_LOCKED_OR_ABSENT RECEIVED");
+            String sRILClassname = SystemProperties.get("ro.telephony.ril_class");
+            if ("Triumph".equals(sRILClassname)) {
+	   	 break;
+	    }
         case SIM_READY:
             log("Radio Technology Change ongoing, setting SS to off");
             newSS.setStateOff();
@@ -1205,7 +1287,16 @@ final class CdmaServiceStateTracker extends ServiceStateTracker {
         } else {
             int[] ints = (int[])ar.result;
             int offset = 2;
-            int cdmaDbm = (ints[offset] > 0) ? -ints[offset] : -120;
+
+            // Samsung CDMA devices only use cdmaDbm for signal strength
+            // parcel is different as well, pull cdmaDbm response correctly
+            // all other values are ignored
+            int cdmaDbm;
+            if (mIsSamsungCdma)
+                cdmaDbm = (ints[0] > 0 ) ? -ints[0] : -120;
+            else
+                cdmaDbm = (ints[offset] > 0) ? -ints[offset] : -120;
+
             int cdmaEcio = (ints[offset+1] > 0) ? -ints[offset+1] : -160;
             int evdoRssi = (ints[offset+2] > 0) ? -ints[offset+2] : -120;
             int evdoEcio = (ints[offset+3] > 0) ? -ints[offset+3] : -1;

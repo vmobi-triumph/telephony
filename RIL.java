@@ -1996,7 +1996,21 @@ public final class RIL extends BaseCommands implements CommandsInterface {
         switch(state) {
             case 0: newState = RadioState.RADIO_OFF; break;
             case 1: newState = RadioState.RADIO_UNAVAILABLE; break;
-            case 2: newState = RadioState.SIM_NOT_READY; break;
+/* 
+ * KD 8-29 If we have a Motorola Triumph it loves to send up a SIM_NOT_READY
+ * code up despite not having a sim.  It also NEVER sends up a NV_READY 
+ * state and it's supposed to, since there's no RUIM either.  Aren't
+ * standard APIs that manufacturer's violate wonderful?  As a consequence, we 
+ * treat the former as the latter - but only if it's a Triumph.
+ */
+            case 2: 
+	    	String sRILClassname = SystemProperties.get("ro.telephony.ril_class");
+            	if ("Triumph".equals(sRILClassname)) {
+            		newState = RadioState.NV_READY;
+		} else {
+			newState = RadioState.SIM_NOT_READY;
+		}
+		break;
             case 3: newState = RadioState.SIM_LOCKED_OR_ABSENT; break;
             case 4: newState = RadioState.SIM_READY; break;
             case 5: newState = RadioState.RUIM_NOT_READY; break;
@@ -2407,6 +2421,16 @@ public final class RIL extends BaseCommands implements CommandsInterface {
             case RIL_UNSOL_OEM_HOOK_RAW: ret = responseRaw(p); break;
             case RIL_UNSOL_RINGBACK_TONE: ret = responseInts(p); break;
             case RIL_UNSOL_RESEND_INCALL_MUTE: ret = responseVoid(p); break;
+/*
+ * KD 8/28 - Add additional unsolicited upcalls for CDMA (Moto Triumph)
+ * Source: Motorola disassembly and Aurora git codebase
+ */
+	    case RIL_UNSOL_CDMA_SUBSCRIPTION_SOURCE_CHANGED: ret = responseInts(p); break;
+	    case RIL_UNSOL_CDMA_PRL_CHANGED: ret = responseVoid(p); break;
+	    case RIL_UNSOL_CDMA_PRL_CHANGED2: ret = responseVoid(p); break;
+	    case RIL_UNSOL_EXIT_EMERGENCY_CALLBACK_MODE: ret = responseVoid(p); break;
+	    case RIL_UNSOL_VOICE_RADIO_TECH_CHANGED: ret = responseVoid(p); break;
+
 
             default:
                 throw new RuntimeException("Unrecognized unsol response: " + response);
@@ -2708,6 +2732,31 @@ public final class RIL extends BaseCommands implements CommandsInterface {
                     mResendIncallMuteRegistrants.notifyRegistrants(
                                         new AsyncResult (null, ret, null));
                 }
+		break;
+/*
+ * KD 8/28 - Add new upcall routines for the added CDMA radio states
+ */
+            case RIL_UNSOL_CDMA_SUBSCRIPTION_SOURCE_CHANGED:
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+                int [] ssource = (int[])ret;
+
+                if(mCdmaSubscriptionSourceChangedRegistrants != null) {
+                    mCdmaSubscriptionSourceChangedRegistrants.notifyRegistrants(
+                          new AsyncResult(null, ssource, null));
+                }
+                break;
+            case RIL_UNSOL_CDMA_PRL_CHANGED:
+            case RIL_UNSOL_CDMA_PRL_CHANGED2:
+    		riljLogv("UNSOL PRL Change Upcall");
+//                unsljLogRet(response, ret);
+//                if (RILJ_LOGD) unsljLogRet(response, ret);
+//                int [] prlv = (int [])ret;
+//
+//                if(mCdmaPrlChangedRegistrants != null) {
+//                    mCdmaPrlChangedRegistrants.notifyRegistrants(
+//                          new AsyncResult(null, prlv, null));
+//                }
+                break;
         }
     }
 
